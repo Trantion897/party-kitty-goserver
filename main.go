@@ -43,20 +43,8 @@ type KittyName struct {
 }
 
 func (n KittyName) format() string {
-//     return n.name[0]
     return fmt.Sprintf("%s-%s", n.name[0], n.name[1])
 }
-
-// func (n KittyName) MarshalJSON() ([]byte, error) {
-//     fmt.Println("%%%%")
-//     formatted := n.format()
-//     fmt.Println(formatted)
-//     output := `{"a": "ghat"}`
-//     bytes := []byte(output)
-//     fmt.Println(bytes)
-//     return bytes, nil
-// //     return []byte(fmt.Sprintf("%s-%s", n.name[0], n.name[1])), nil
-// }
 
 type KittyData struct {
     name KittyName
@@ -273,7 +261,7 @@ func handlePut(w http.ResponseWriter, r *http.Request) {
         panic(err.Error())
     }
         
-    res, err := stmtInsert.Exec(
+    _, err = stmtInsert.Exec(
         name.format(), 
         putData.Currency,
         jsonAmount,
