@@ -28,6 +28,12 @@ const DB_TABLE_PREFIX = "partykitty_"
 
 var db *sql.DB
 
+var stmtCheckBalance *sql.Stmt
+var stmtExisting *sql.Stmt
+var stmtInsert *sql.Stmt
+var stmtLoadKitty *sql.Stmt
+var stmtUpdate *sql.Stmt
+
 func check(e error) {
     if e != nil {
         panic(e)
@@ -114,12 +120,6 @@ func createDictionary() Dictionary {
 
 func (d Dictionary) randomKittyName() (string, error) {
     // Look up words that have already been used
-    stmtExisting, err := db.Prepare("SELECT name FROM " + DB_TABLE_PREFIX + "data")
-    if err != nil {
-        panic(err.Error())
-    }
-    defer stmtExisting.Close()
-    
     res, err := stmtExisting.Query()
     if err != nil {
         panic(err.Error())
@@ -189,20 +189,12 @@ func handleGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func loadData(name KittyName) (KittyData, error) {
-    // TODO: Pre-prepare statement
-    stmtLoadKitty, err := db.Prepare("SELECT name, currencySet, amount, partySize, splitRatio, config, last_update, last_view FROM "+DB_TABLE_PREFIX+"data WHERE name = ? LIMIT 1")
-    if err != nil {
-        return KittyData{}, err
-    }
-    
-    defer stmtLoadKitty.Close()
-    
     var data KittyData
     var loadedName string
     
     row := stmtLoadKitty.QueryRow(name.format())
     
-    err = row.Scan(
+    err := row.Scan(
         &loadedName,
         &data.currencySet,
         &data.amount,
@@ -240,16 +232,6 @@ func handlePut(w http.ResponseWriter, r *http.Request) {
     }
     
     // TODO: Rate limits
-    
-    // TODO: Pre-prepare statement
-    // TODO: Can I use named parameters?
-    // TODO: Can I use linebreaks?
-    stmtInsert, err := db.Prepare("INSERT INTO "+DB_TABLE_PREFIX+"data SET name=?, currencySet=?, amount=?, partySize=?, splitRatio=?, config=?, last_update=UTC_TIMESTAMP(), last_view=UTC_TIMESTAMP()")
-    
-    if err != nil {
-        panic(err.Error())
-    }
-    defer stmtInsert.Close()
     
     fmt.Println(putData)
     fmt.Println(name)
@@ -318,13 +300,6 @@ func handlePost(w http.ResponseWriter, r *http.Request) {
     // TODO: Apply rate limits
     
     // Get balance before update
-    // TODO: Pre-prepare statement
-    stmtCheckBalance, err := db.Prepare("SELECT last_update, amount FROM "+DB_TABLE_PREFIX+"data WHERE name = ? LIMIT 1")
-    if err != nil {
-        panic(err.Error())
-    }
-    defer stmtCheckBalance.Close()
-    
     row := stmtCheckBalance.QueryRow(name.format())
     
     var serverLastUpdate time.Time
@@ -382,16 +357,6 @@ func handlePost(w http.ResponseWriter, r *http.Request) {
         fmt.Printf("%s = %d; ", currency, serverValue)
     }
     
-    // TODO: Pre-prepare statement
-    // TODO: Can I use named parameters?
-    // TODO: Can I use linebreaks?
-    stmtUpdate, err := db.Prepare("UPDATE "+DB_TABLE_PREFIX+"data SET currencySet=?, amount=?, partySize=?, splitRatio=?, config=?, last_update=UTC_TIMESTAMP(), last_view=UTC_TIMESTAMP() WHERE name=?")
-    
-    if err != nil {
-        panic(err.Error())
-    }
-    defer stmtUpdate.Close()
-    
     fmt.Println(newValue)
     jsonNewValue, err := json.Marshal(newValue)
     fmt.Printf("JSON: %s\n",jsonNewValue)
@@ -428,27 +393,70 @@ func handlePost(w http.ResponseWriter, r *http.Request) {
         
 }
 
-func main() {
-    
-    //dict := createDictionary()
-    
+func initDb() error {
     // Create connection pool
     var err error 
     db, err = sql.Open("mysql", fmt.Sprintf("%s:%s@(%s)/%s?parseTime=true", DB_USER, DB_PASSWORD, DB_HOST, DB_DB))
     if err != nil {
-        panic(err)
+        return err
     }
-    defer db.Close()
     
     // Ping connection to check server
     err = db.Ping()
     if err != nil {
-        panic (err.Error())
+        return err
     }
     
     db.SetConnMaxLifetime(time.Minute * 3)
     db.SetMaxOpenConns(3)
     db.SetMaxIdleConns(3)
+    
+    stmtExisting, err = db.Prepare("SELECT name FROM " + DB_TABLE_PREFIX + "data")
+    if err != nil {
+        panic(err.Error())
+    }
+    
+    // Load an existing kitty
+    stmtLoadKitty, err = db.Prepare("SELECT name, currencySet, amount, partySize, splitRatio, config, last_update, last_view FROM "+DB_TABLE_PREFIX+"data WHERE name = ? LIMIT 1")
+    if err != nil {
+        return err
+    }
+    
+    // Create a new kitty
+    // TODO: Can I use named parameters?
+    // TODO: Can I use linebreaks?
+    stmtInsert, err = db.Prepare("INSERT INTO "+DB_TABLE_PREFIX+"data SET name=?, currencySet=?, amount=?, partySize=?, splitRatio=?, config=?, last_update=UTC_TIMESTAMP(), last_view=UTC_TIMESTAMP()")
+    
+    if err != nil {
+        return err
+    }
+    
+    // Get balance for an existing kitty
+    stmtCheckBalance, err = db.Prepare("SELECT last_update, amount FROM "+DB_TABLE_PREFIX+"data WHERE name = ? LIMIT 1")
+    if err != nil {
+        return err
+    }
+    
+    // Update an existing kitty
+    // TODO: Can I use named parameters?
+    // TODO: Can I use linebreaks?
+    stmtUpdate, err = db.Prepare("UPDATE "+DB_TABLE_PREFIX+"data SET currencySet=?, amount=?, partySize=?, splitRatio=?, config=?, last_update=UTC_TIMESTAMP(), last_view=UTC_TIMESTAMP() WHERE name=?")
+    
+    if err != nil {
+        return err
+    }
+    
+    return nil
+}
+
+func main() {
+    
+    //dict := createDictionary()
+    err := initDb()
+    
+    if err != nil {
+        panic("Could not initialise database")
+    }
     
     mux := http.NewServeMux()
 
