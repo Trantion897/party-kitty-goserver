@@ -34,6 +34,8 @@ var stmtInsert *sql.Stmt
 var stmtLoadKitty *sql.Stmt
 var stmtUpdate *sql.Stmt
 
+var dict Dictionary
+
 func check(e error) {
     if e != nil {
         panic(e)
@@ -100,9 +102,11 @@ func kittyNameFromString(input string) (KittyName, error) {
     return KittyName{parsed}, nil
 }
 
-func createDictionary() Dictionary {
+func createDictionary() (Dictionary, error) {
     data, err := os.ReadFile(WORD_LIST)
-    check(err)
+    if err != nil {
+        return Dictionary{}, err
+    }
     words := strings.Split(string(data), "\n")
     filteredWords := make([]string, 0, len(words))
     
@@ -115,7 +119,7 @@ func createDictionary() Dictionary {
         }
     }
     
-    return Dictionary{filteredWords}
+    return Dictionary{filteredWords}, nil
 }
 
 func (d Dictionary) randomKittyName() (string, error) {
@@ -221,8 +225,6 @@ func handlePut(w http.ResponseWriter, r *http.Request) {
     var putData *IncomingData
     
     err := json.NewDecoder(r.Body).Decode(&putData)
-    
-    dict := createDictionary() // TODO: Do it once
     
     strName, err := dict.randomKittyName()
     name, err := kittyNameFromString(strName)
@@ -451,11 +453,16 @@ func initDb() error {
 
 func main() {
     
-    //dict := createDictionary()
     err := initDb()
     
     if err != nil {
         panic("Could not initialise database")
+    }
+    
+    dict, err = createDictionary()
+    
+    if err != nil {
+        panic("Could not initialise word list")
     }
     
     mux := http.NewServeMux()
