@@ -3,9 +3,11 @@ package main
 import (
     "github.com/rs/cors"
     "fmt"
+    "math"
     "math/rand"
     "encoding/json"
     "net/http"
+    "net/netip"
     "os"
     "regexp"
     "strings"
@@ -26,6 +28,11 @@ const DB_PASSWORD = "Dh1KKsO/1KXXqS17"
 const DB_DB = "party_kitty"
 const DB_TABLE_PREFIX = "partykitty_"
 
+// TODO: negative config looks bad
+const RATE_LIMIT_PERIOD = time.Duration(-300 * float64(time.Second))
+const RATE_LIMIT_CREATE_LIMIT = 1
+const RATE_LIMIT_UPDATE_LIMIT = 2
+
 var db *sql.DB
 
 var stmtCheckBalance *sql.Stmt
@@ -33,6 +40,11 @@ var stmtExisting *sql.Stmt
 var stmtInsert *sql.Stmt
 var stmtLoadKitty *sql.Stmt
 var stmtUpdate *sql.Stmt
+var stmtExpireRateLimit *sql.Stmt
+var stmtRecentUnnamedActions *sql.Stmt
+var stmtRecentNamedActions *sql.Stmt
+var stmtAddNamedAction *sql.Stmt
+var stmtAddUnnamedAction *sql.Stmt
 
 var dict Dictionary
 
@@ -233,7 +245,10 @@ func handlePut(w http.ResponseWriter, r *http.Request) {
         panic(err.Error())
     }
     
-    // TODO: Rate limits
+    // Stop processing if rate limit reached
+    if applyRateLimits(r, w, "create", nil) {
+        return
+    }
     
     fmt.Println(putData)
     fmt.Println(name)
@@ -299,7 +314,10 @@ func handlePost(w http.ResponseWriter, r *http.Request) {
         panic(err.Error())
     }
     
-    // TODO: Apply rate limits
+    // Stop processing if rate limit reached
+    if applyRateLimits(r, w, "update", &name) {
+        return
+    }
     
     // Get balance before update
     row := stmtCheckBalance.QueryRow(name.format())
@@ -448,6 +466,39 @@ func initDb() error {
         return err
     }
     
+    // Expire rate limits
+    stmtExpireRateLimit, err = db.Prepare("DELETE FROM "+DB_TABLE_PREFIX+"ratelimit WHERE timestamp < ?")
+    
+    if err != nil {
+        return err
+    }
+    
+    // Recent actions by IP
+    stmtRecentNamedActions, err = db.Prepare("SELECT COUNT(1) FROM "+DB_TABLE_PREFIX+"ratelimit WHERE IP = ? AND action = ? AND kitty = ?")
+    
+    if err != nil {
+        return err
+    }
+    stmtRecentUnnamedActions, err = db.Prepare("SELECT COUNT(1) FROM "+DB_TABLE_PREFIX+"ratelimit WHERE IP = ? AND action = ?")
+    
+    if err != nil {
+        return err
+    }
+    
+    // Add to rate limit table
+    stmtAddNamedAction, err = db.Prepare("REPLACE INTO "+DB_TABLE_PREFIX+"ratelimit SET ip=?, action=?, kitty=?, timestamp=UTC_TIMESTAMP()")
+    
+    if err != nil {
+        return err
+    }
+    
+    // Add to rate limit table
+    stmtAddUnnamedAction, err = db.Prepare("REPLACE INTO "+DB_TABLE_PREFIX+"ratelimit SET ip=?, action=?, kitty=NULL, timestamp=UTC_TIMESTAMP()")
+    
+    if err != nil {
+        return err
+    }
+    
     return nil
 }
 
@@ -485,4 +536,93 @@ func main() {
     })
     
     http.ListenAndServe(":8000", c.Handler(mux))
+}
+
+/**
+ * Check rate limits applying to the current request and terminate with appropriate error
+ * 
+ * Returns true if rate limits were applied and the request should be ignored
+ */
+func applyRateLimits(r *http.Request, w http.ResponseWriter, action string, kitty *KittyName) bool {
+    addr, _, _ := strings.Cut(r.RemoteAddr, ":")
+    ip, err := netip.ParseAddr(addr); // TODO: Handle proxies
+    if err != nil {
+        fmt.Println("Could not parse remote IP: "+r.RemoteAddr+", rejecting request")
+        return true
+    }
+    
+    if !checkRateLimits(ip, action, kitty) {
+        retryAfter := int(math.Ceil(RATE_LIMIT_PERIOD.Seconds()))
+        w.WriteHeader(429)
+        w.Header().Add("Retry-After", string(retryAfter))
+        var output = make(map[string]string)
+        output["RetryAfter"] = string(retryAfter)
+        jsonOutput, err := json.Marshal(output)
+        if err == nil {
+            w.Write(jsonOutput)
+        }
+        return true
+    }
+    
+    return false
+}
+
+/**
+ * Expire any rate limit data from before the rate limit period
+ */
+func expireRateLimits() {
+    expiration := time.Now().Add(RATE_LIMIT_PERIOD)
+    stmtExpireRateLimit.Exec(expiration)
+}
+
+/**
+ * Checks the rate limits that apply to an action
+ * 
+ * Returns true or false to indicate if this action is allowed.
+ * If the result is true, the action is stored in the rate limit table.
+ * Outdated rate limit data is deleted
+ */
+func checkRateLimits(ip netip.Addr, action string, kitty *KittyName) bool {
+    var appliedLimit int
+    var result *sql.Row
+    
+    expireRateLimits()
+    
+    switch action {
+        case "create":
+            // TODO: Handle blank rate limit
+            appliedLimit = RATE_LIMIT_CREATE_LIMIT
+            result = stmtRecentUnnamedActions.QueryRow(ip.String(), action)
+        case "update":
+            appliedLimit = RATE_LIMIT_UPDATE_LIMIT
+            result = stmtRecentNamedActions.QueryRow(ip.String(), action, kitty.format())
+        default:
+            return false
+    }
+    
+    
+    var recentActions int
+    err := result.Scan(&recentActions)
+    
+    if err != nil {
+        panic(err.Error())
+    }
+    
+    if recentActions >= appliedLimit {
+        fmt.Println("Applied rate limit")
+        return false // Apply a rate limit
+    }
+    
+    // Rate limit NOT applied, add a new record for this action
+    fmt.Println("Rate limit OK, logging action")
+    if kitty == nil {
+        _, err = stmtAddUnnamedAction.Exec(ip.String(), action)
+    } else {
+        _, err = stmtAddNamedAction.Exec(ip.String(), action, kitty.format())
+    }
+    
+    if err != nil {
+        panic(err.Error())
+    }
+    return true
 }
