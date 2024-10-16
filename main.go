@@ -33,6 +33,12 @@ const RATE_LIMIT_PERIOD = time.Duration(-300 * float64(time.Second))
 const RATE_LIMIT_CREATE_LIMIT = 1
 const RATE_LIMIT_UPDATE_LIMIT = 2
 
+const EXPIRATION_AFTER_LAST_UPDATE_MONTHS = 6
+const EXPIRATION_AFTER_LAST_VIEW_MONTHS = 1
+const EXPIRE_AFTER_NEW = true;
+const EXPIRE_AFTER_UPDATE = true;
+const EXPIRE_AFTER_GET = true;
+
 var db *sql.DB
 
 var stmtCheckBalance *sql.Stmt
@@ -45,6 +51,7 @@ var stmtRecentUnnamedActions *sql.Stmt
 var stmtRecentNamedActions *sql.Stmt
 var stmtAddNamedAction *sql.Stmt
 var stmtAddUnnamedAction *sql.Stmt
+var stmtExpireOldData *sql.Stmt
 
 var dict Dictionary
 
@@ -202,6 +209,10 @@ func handleGet(w http.ResponseWriter, r *http.Request) {
     if err != nil {
         panic(err.Error())
     }
+    
+    if EXPIRE_AFTER_GET {
+        expireData()
+    }
 }
 
 func loadData(name KittyName) (KittyData, error) {
@@ -284,7 +295,11 @@ func handlePut(w http.ResponseWriter, r *http.Request) {
         panic(err.Error())
     }
     
-    // TODO: Expire old data
+    // Expire old data
+    
+    if EXPIRE_AFTER_NEW {
+        expireData()
+    }
 }
 
 type IncomingData struct {
@@ -409,7 +424,10 @@ func handlePost(w http.ResponseWriter, r *http.Request) {
         panic(err.Error())
     }
     
-    // TODO: Expire old data
+    // Expire old data
+    if EXPIRE_AFTER_UPDATE {
+        expireData()
+    }
         
 }
 
@@ -499,6 +517,13 @@ func initDb() error {
         return err
     }
     
+    // Expire old data
+    stmtExpireOldData, err = db.Prepare("DELETE FROM "+DB_TABLE_PREFIX+"data WHERE last_update < ? AND last_view < ?")
+    
+    if err != nil {
+        return err
+    }
+    
     return nil
 }
 
@@ -536,6 +561,23 @@ func main() {
     })
     
     http.ListenAndServe(":8000", c.Handler(mux))
+}
+
+func expireData() {
+    lastUpdateTime := time.Now().AddDate(0, EXPIRATION_AFTER_LAST_UPDATE_MONTHS*-1, 0)
+    lastViewTime := time.Now().AddDate(0, EXPIRATION_AFTER_LAST_VIEW_MONTHS*-1, 0)
+    
+    res, err := stmtExpireOldData.Exec(lastUpdateTime, lastViewTime)
+    
+    if err != nil {
+        panic(err.Error())
+    }
+    
+    rowsAffected, err := res.RowsAffected()
+    
+    if err == nil {    
+        fmt.Printf("%d kitty/ies were expired due to lack of activity", rowsAffected)
+    }
 }
 
 /**
