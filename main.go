@@ -121,10 +121,7 @@ func (d Dictionary) randomKittyName() (string, error) {
             break
         }
         
-        fmt.Println("%s has already been used", newName)
-        
     }
-    fmt.Println("%s is a new name", newName)
     
     return newName, nil
 }
@@ -134,7 +131,6 @@ func handleGet(w http.ResponseWriter, r *http.Request) {
     name, err := kittyNameFromString(query.Get("name"))
     
     if err != nil {
-        fmt.Println("Error getting kitty name")
         w.WriteHeader(http.StatusNotFound)
         return
     }
@@ -143,8 +139,7 @@ func handleGet(w http.ResponseWriter, r *http.Request) {
     
     if err != nil {
         if err == sql.ErrNoRows {
-            fmt.Println("Empty result set")
-            w.WriteHeader(404)
+            w.WriteHeader(http.StatusNotFound)
             return
         }
         panic(err.Error())
@@ -207,9 +202,6 @@ func handlePut(w http.ResponseWriter, r *http.Request) {
         return
     }
     
-    fmt.Println(putData)
-    fmt.Println(name)
-    
     jsonAmount, err := json.Marshal(putData.Amount)
     jsonConfig, err := json.Marshal(putData.Config)
     
@@ -268,7 +260,6 @@ func handlePost(w http.ResponseWriter, r *http.Request) {
     if err != nil {
         panic(err.Error())
     }
-    fmt.Println(postData)
     
     name, err := kittyNameFromString(postData.Name)
     if err != nil {
@@ -294,11 +285,7 @@ func handlePost(w http.ResponseWriter, r *http.Request) {
     }
     
     json.Unmarshal([]byte(beforeAmountRaw), &beforeAmount)
-    
-    fmt.Println(serverLastUpdate)
-    fmt.Println(clientLastUpdate)
-    fmt.Println(beforeAmount)
-    
+        
     if clientLastUpdate.After(serverLastUpdate) {
         w.WriteHeader(http.StatusBadRequest)
         fmt.Fprint(w, `{"error": "INVALID_LAST_UPDATE"}`)
@@ -326,7 +313,6 @@ func handlePost(w http.ResponseWriter, r *http.Request) {
             }`, currency)
         }
         
-        fmt.Printf("(%s): Client last: %d, server last: %d, client new: %d\n", currency, clientLastValue, serverValue, clientValue)
         // TODO: Maybe allow floats, but use ints if possible
         if (clientLastValue == serverValue) {
             newValue[currency] = clientValue
@@ -335,13 +321,9 @@ func handlePost(w http.ResponseWriter, r *http.Request) {
             newValue[currency] = serverValue + currencyDiff
         }
         
-        fmt.Printf("%s = %d; ", currency, serverValue)
     }
     
-    fmt.Println(newValue)
     jsonNewValue, err := json.Marshal(newValue)
-    fmt.Printf("JSON: %s\n",jsonNewValue)
-    fmt.Println("^^^^")
     jsonConfig, err := json.Marshal(postData.Config)
     
     res, err := stmtUpdate.Exec(
@@ -352,9 +334,7 @@ func handlePost(w http.ResponseWriter, r *http.Request) {
         jsonConfig,
         name.format(),
     )
-    
-    fmt.Println(res)
-    
+        
     if err != nil {
         panic(err.Error())
     }
@@ -598,12 +578,10 @@ func checkRateLimits(ip netip.Addr, action string, kitty *KittyName) bool {
     }
     
     if recentActions >= appliedLimit {
-        fmt.Println("Applied rate limit")
         return false // Apply a rate limit
     }
     
     // Rate limit NOT applied, add a new record for this action
-    fmt.Println("Rate limit OK, logging action")
     if kitty == nil {
         _, err = stmtAddUnnamedAction.Exec(ip.String(), action)
     } else {
