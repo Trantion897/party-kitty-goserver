@@ -57,12 +57,6 @@ var stmtExpireOldData *sql.Stmt
 
 var dict Dictionary
 
-func check(e error) {
-    if e != nil {
-        panic(e)
-    }
-}
-
 type Dictionary struct {
     words []string
 }
@@ -91,7 +85,7 @@ func (d Dictionary) randomKittyName() (string, error) {
     // Look up words that have already been used
     res, err := stmtExisting.Query()
     if err != nil {
-        panic(err.Error())
+        return "", err
     }
     
     // This map is equivalent to a set and easy to find if a name exists
@@ -101,7 +95,7 @@ func (d Dictionary) randomKittyName() (string, error) {
         var name string
         err = res.Scan(&name)
         if err != nil {
-            panic(err.Error())
+            return "", err
         }
         existingNames[name] = struct{}{}
     }
@@ -142,13 +136,17 @@ func handleGet(w http.ResponseWriter, r *http.Request) {
             w.WriteHeader(http.StatusNotFound)
             return
         }
-        panic(err.Error())
     }
     
     // TODO: Check if kitty has been modified since if_modified_since
     err = json.NewEncoder(w).Encode(kittyData)
     if err != nil {
-        panic(err.Error())
+        fmt.Printf("Error encoding kitty data from database - kitty %s\n", name)
+        fmt.Fprintf(w, `{
+                "error": "LOAD_DATA_ERROR",
+                "errorParam": "%s",
+            }`, name)
+        w.WriteHeader(http.StatusInternalServerError)
     }
     
     if EXPIRE_AFTER_GET {
@@ -194,11 +192,17 @@ func handlePut(w http.ResponseWriter, r *http.Request) {
     name, err := kittyNameFromString(strName)
     
     if err != nil {
-        panic(err.Error())
+        w.WriteHeader(http.StatusBadRequest)
+        fmt.Fprintf(w, `{
+            "error": "INVALID_NAME",
+            "errorParam": "%s",
+        }`, name)
+        return
     }
     
     // Stop processing if rate limit reached
     if applyRateLimits(r, w, "create", nil) {
+        w.WriteHeader(http.StatusTooManyRequests)
         return
     }
     
@@ -206,7 +210,11 @@ func handlePut(w http.ResponseWriter, r *http.Request) {
     jsonConfig, err := json.Marshal(putData.Config)
     
     if err != nil {
-        panic(err.Error())
+        w.WriteHeader(http.StatusBadRequest)
+        fmt.Fprintf(w, `{
+            "error": "INVALID_DATA"
+        }`)
+        return
     }
         
     _, err = stmtInsert.Exec(
@@ -219,18 +227,27 @@ func handlePut(w http.ResponseWriter, r *http.Request) {
     )
 
     if err != nil {
-        panic(err.Error())
+        w.WriteHeader(http.StatusInternalServerError)
+        fmt.Println("Error writing to database on PUT:")
+        fmt.Println(err.Error())
+        return
     }
     
     kittyData, err := loadData(name)
     if err != nil {
-        panic(err.Error())
+        w.WriteHeader(http.StatusInternalServerError)
+        fmt.Println("Error reading from database on PUT:")
+        fmt.Println(err.Error())
+        return
     }
     
     // TODO: In PHP, we only return name, amount & lastUpdate
     err = json.NewEncoder(w).Encode(kittyData)
     if err != nil {
-        panic(err.Error())
+        w.WriteHeader(http.StatusInternalServerError)
+        fmt.Println("Error returning saved data to browser on PUT:")
+        fmt.Println(err.Error())
+        return
     }
     
     // Expire old data
@@ -258,16 +275,26 @@ func handlePost(w http.ResponseWriter, r *http.Request) {
     
     err := json.NewDecoder(r.Body).Decode(&postData)
     if err != nil {
-        panic(err.Error())
+        w.WriteHeader(http.StatusBadRequest)
+        fmt.Fprintf(w, `{
+            "error": "INVALID_DATA"
+        }`)
+        return
     }
     
     name, err := kittyNameFromString(postData.Name)
     if err != nil {
-        panic(err.Error())
+        w.WriteHeader(http.StatusBadRequest)
+        fmt.Fprintf(w, `{
+            "error": "INVALID_NAME",
+            "errorParam": "%s",
+        }`, name)
+        return
     }
     
     // Stop processing if rate limit reached
     if applyRateLimits(r, w, "update", &name) {
+        w.WriteHeader(http.StatusTooManyRequests)
         return
     }
     
@@ -281,7 +308,10 @@ func handlePost(w http.ResponseWriter, r *http.Request) {
         
     err = row.Scan(&serverLastUpdate, &beforeAmountRaw)
     if err != nil {
-        panic(err.Error())
+        w.WriteHeader(http.StatusInternalServerError)
+        fmt.Println("Error loading existing balance for kitty "+name.format());
+        fmt.Println(err.Error())
+        return
     }
     
     json.Unmarshal([]byte(beforeAmountRaw), &beforeAmount)
@@ -326,7 +356,15 @@ func handlePost(w http.ResponseWriter, r *http.Request) {
     jsonNewValue, err := json.Marshal(newValue)
     jsonConfig, err := json.Marshal(postData.Config)
     
-    res, err := stmtUpdate.Exec(
+    if err != nil {
+        w.WriteHeader(http.StatusBadRequest)
+        fmt.Fprintf(w, `{
+            "error": "INVALID_DATA",
+        }`, name)
+        return
+    }
+    
+    _, err = stmtUpdate.Exec(
         postData.Currency,
         jsonNewValue,
         int(postData.PartySize),
@@ -336,25 +374,31 @@ func handlePost(w http.ResponseWriter, r *http.Request) {
     )
         
     if err != nil {
-        panic(err.Error())
+        w.WriteHeader(http.StatusInternalServerError)
+        return
     }
     
     kittyData, err := loadData(name)
     if err != nil {
-        panic(err.Error())
+        w.WriteHeader(http.StatusInternalServerError)
+        fmt.Println("Error reading from database on POST:")
+        fmt.Println(err.Error())
+        return
     }
     
     // TODO: In PHP, we only return name, amount & lastUpdate
     err = json.NewEncoder(w).Encode(kittyData)
     if err != nil {
-        panic(err.Error())
+        w.WriteHeader(http.StatusInternalServerError)
+        fmt.Println("Error returning saved data to browser on POST:")
+        fmt.Println(err.Error())
+        return
     }
     
     // Expire old data
     if EXPIRE_AFTER_UPDATE {
         expireData()
     }
-        
 }
 
 func initDb() error {
@@ -377,7 +421,7 @@ func initDb() error {
     
     stmtExisting, err = db.Prepare("SELECT name FROM " + DB_TABLE_PREFIX + "data")
     if err != nil {
-        panic(err.Error())
+        return err
     }
     
     // Load an existing kitty
@@ -496,7 +540,8 @@ func expireData() {
     res, err := stmtExpireOldData.Exec(lastUpdateTime, lastViewTime)
     
     if err != nil {
-        panic(err.Error())
+        fmt.Println("Unable to expire data")
+        fmt.Println(err.Error())
     }
     
     rowsAffected, err := res.RowsAffected()
@@ -574,7 +619,8 @@ func checkRateLimits(ip netip.Addr, action string, kitty *KittyName) bool {
     err := result.Scan(&recentActions)
     
     if err != nil {
-        panic(err.Error())
+        fmt.Println("Unable to check rate limits:")
+        fmt.Println(err.Error())
     }
     
     if recentActions >= appliedLimit {
@@ -589,7 +635,8 @@ func checkRateLimits(ip netip.Addr, action string, kitty *KittyName) bool {
     }
     
     if err != nil {
-        panic(err.Error())
+        fmt.Println("Unable to track rate limits:")
+        fmt.Println(err.Error())
     }
     return true
 }
