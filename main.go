@@ -4,7 +4,6 @@ import (
     
     "github.com/rs/cors"
     "fmt"
-    "math"
     "math/rand"
     "encoding/json"
     "net/http"
@@ -29,9 +28,11 @@ const DB_PASSWORD = "Dh1KKsO/1KXXqS17"
 const DB_DB = "party_kitty"
 const DB_TABLE_PREFIX = "partykitty_"
 
-// TODO: negative config looks bad
-const RATE_LIMIT_PERIOD = time.Duration(-300 * float64(time.Second))
-const RATE_LIMIT_CREATE_LIMIT = 1
+// Period over which rate limits apply (seconds)
+const RATE_LIMIT_PERIOD = 300
+// Number of kitties that can be created in the rate limit period
+const RATE_LIMIT_CREATE_LIMIT = 1 
+// Number of kitties that can be updated in the rate limit period
 const RATE_LIMIT_UPDATE_LIMIT = 2
 
 const EXPIRATION_AFTER_LAST_UPDATE_MONTHS = 6
@@ -539,7 +540,7 @@ func applyRateLimits(r *http.Request, w http.ResponseWriter, action string, kitt
     }
     
     if !checkRateLimits(ip, action, kitty) {
-        retryAfter := int(math.Ceil(RATE_LIMIT_PERIOD.Seconds()))
+        retryAfter := RATE_LIMIT_PERIOD
         w.WriteHeader(429)
         w.Header().Add("Retry-After", string(retryAfter))
         var output = make(map[string]string)
@@ -558,7 +559,8 @@ func applyRateLimits(r *http.Request, w http.ResponseWriter, action string, kitt
  * Expire any rate limit data from before the rate limit period
  */
 func expireRateLimits() {
-    expiration := time.Now().Add(RATE_LIMIT_PERIOD)
+    rateLimit := time.Duration(RATE_LIMIT_PERIOD * float64(time.Second) * -1)
+    expiration := time.Now().Add(rateLimit)
     stmtExpireRateLimit.Exec(expiration)
 }
 
