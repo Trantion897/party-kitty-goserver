@@ -128,9 +128,10 @@ func handleGet(w http.ResponseWriter, r *http.Request) {
         w.WriteHeader(http.StatusNotFound)
         return
     }
-    
+
     kittyData, err := loadData(name)
     
+    // TODO: Not getting a 404 here when we give an invalid URL
     if err != nil {
         if err == sql.ErrNoRows {
             w.WriteHeader(http.StatusNotFound)
